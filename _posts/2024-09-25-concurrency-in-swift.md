@@ -1,25 +1,25 @@
 ---
 title: "CONCURRENCY IN SWIFT"
-date: 2024-09-25
+date: 2024-10-01
 ---
 There are several ways to do concurrency in Swift/Objective-C. This blog post is my attempt to gather all relevant mechanisms and serves as a reference for myself. I hope it benefits you as well.
 
 ---
 
-### 1. GCD
+# 1. GCD
 Grand Central Dispatch (GCD) queues allows us to execute tasks in FIFO (First-In-First-Out) manner. A task is basically some work that our apps need to perform.
 
-#### Types of scheduling
+## Types of scheduling
 
 We schedule tasks either synchronously (sync) or asynchronously (async) with respect to the caller.
 
-Sync means that the current thread of execution is blocked until the specified task finishes executing. This is useful when we want to avoid race conditions or other synchronization errors.
+Sync means the current thread of execution is blocked until the specified task finishes executing. This is useful when we want to avoid race conditions or other synchronization errors.
 
-Async means that we schedule the execution of the task and continue to do other work from the calling thread.
+Async means we schedule the task and continue to do other work from the calling thread.
 
 Generally, because there is no way to know when a scheduled task will execute, `async is preferred over sync`.
 
-#### Types of dispatch queues
+## Types of dispatch queues
 A dispatch queue executes scheduled tasks either serially or concurrently.
 
 | Type | Description |
@@ -28,129 +28,312 @@ A dispatch queue executes scheduled tasks either serially or concurrently.
 | Concurrent | Concurrent queues (also known as a type of global dispatch queue) execute one or more tasks concurrently, but tasks are still started in the order in which they were added to the queue. The exact number of tasks executing at any given point is variable and depends on system conditions. |
 | Main dispatch queue | The main dispatch queue is a globally available serial queue that executes tasks on the application’s main thread |
 
-#### Samples
-##### Dispatch a single task sync and async on a serial queue
+## Samples
+### Dispatch a single task sync or async on a serial queue
 ```Swift
 import Foundation
-let concurrentQueue = DispatchQueue(label: "com.example.concurrentQueue")
+let serialQueue = DispatchQueue(label: "com.example.serialQueue")
 concurrentQueue.async {
   print("Async task execution")
 }
 
 print("Async task may or may not be executed yet") // The async task is executed on another thread at a certain point of time in the future so this print line might be printed before the print line inside the async task
 
-// The async task must be started before this sync task can be executed because this is a serial queue
+// Execution of the async task above must be done before this sync task can be executed because this is a serial queue
 concurrentQueue.sync {
     print("Sync task execution")
 }
 ```
 
-#### Perform a completion block when a task is done
-Sometimes we want to know when the task is done along with its result. It can be done through a completion block.
-TODO: add code sample here
-
-#### Race condition 1: Schedule a task from the task that is executing in the same queue
-This race condition is usually caused by a circular dependency of tasks submitted to the queue: Task A is executed and enqueue task B. In order for task A to complete, task B must complete first. But since this is a queue, task A must complete before task B. This leads to a crash.
-
-This issue is always reproduced with sync calls to a serial queue.
+### Perform a completion block when a task is done
+Sometimes we want to know when the task is done along with its result. It can be done through a completion handler block.
 ```Swift
 let serialQueue = DispatchQueue(label: "com.example.concurrentQueue")
-func performAsyncTask(completion: @escaping (Result<String, Error>) -> Void) {
+func performAsyncTask(completion: @escaping () -> Void) {
     serialQueue.sync {
         let result = "Task completed"
         
         serialQueue.sync {
-            completion(.success(result))
+            completion()
         }
     }
 }
 
-performAsyncTask { result in
-    switch result {
-    case .success(let value):
-        print("Success: \(value)")
-    case .failure(let error):
-        print("Error: \(error)")
-    }
+performAsyncTask {
+  print("Completion handler called after the task finished.")
 }
 ```
 
-Sample crash log
-```
-Stack dump:
-0.      Program arguments: /usr/bin/swift-frontend -frontend -interpret - -disable-objc-i
-nterop -color-diagnostics -D DEBUG -new-driver-path /usr/bin/swift-driver -empty-abi-descriptor -resource-dir /usr/lib/swift -module-name main -plugin-path /usr/lib/swift/host/plugins -plugin-path /usr/local/lib/swift/host/plugins
-1.      Swift version 5.10.1 (swift-5.10.1-RELEASE)
-2.      Compiling with the current language version
-3.      While running user code "<stdin>"
-Stack dump without symbol names (ensure you have llvm-symbolizer in your PATH or set the environment var `LLVM_SYMBOLIZER_PATH` to point to it):
-/usr/bin/swift-frontend(+0x61b7463)[0x55b9b662b463]
-/usr/bin/swift-frontend(+0x61b541e)[0x55b9b662941e]
-/usr/bin/swift-frontend(+0x61b77da)[0x55b9b662b7da]
-/lib/x86_64-linux-gnu/libc.so.6(+0x42520)[0x7f42701cf520]
-/usr/lib/swift/linux/libdispatch.so(+0x34928)[0x7f42700cb928]
-/usr/lib/swift/linux/libdispatch.so(+0x343e1)[0x7f42700cb3e1]
-/usr/lib/swift/linux/libswiftDispatch.so($s8Dispatch0A5QueueC4sync7executeyyyXE_tF+0x92)[0x7f426e009892]
-[0x7f4270743f20]
-/usr/lib/swift/linux/libswiftDispatch.so(+0x2091c)[0x7f426e00991c]
-/usr/lib/swift/linux/libswiftDispatch.so(+0x156c9)[0x7f426dffe6c9]
-/usr/lib/swift/linux/libdispatch.so(+0x345de)[0x7f42700cb5de]
-/usr/lib/swift/linux/libswiftDispatch.so($s8Dispatch0A5QueueC4sync7executeyyyXE_tF+0x92)[0x7f426e009892]
-[0x7f4270743815]
-[0x7f427074316d]
-/usr/bin/swift-frontend(+0xdd331d)[0x55b9b124731d]
-/usr/bin/swift-frontend(+0xcb93f8)[0x55b9b112d3f8]
-/usr/bin/swift-frontend(+0xcb7223)[0x55b9b112b223]
-/usr/bin/swift-frontend(+0xc63ea6)[0x55b9b10d7ea6]
-/usr/bin/swift-frontend(+0xc5f102)[0x55b9b10d3102]
-/usr/bin/swift-frontend(+0xc5e18b)[0x55b9b10d218b]
-/usr/bin/swift-frontend(+0xc714ba)[0x55b9b10e54ba]
-/usr/bin/swift-frontend(+0xc624f8)[0x55b9b10d64f8]
-/usr/bin/swift-frontend(+0xc5ff7d)[0x55b9b10d3f7d]
-/usr/bin/swift-frontend(+0xaf92c0)[0x55b9b0f6d2c0]
-/lib/x86_64-linux-gnu/libc.so.6(+0x29d90)[0x7f42701b6d90]
-/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x80)[0x7f42701b6e40]
-/usr/bin/swift-frontend(+0xaf83f5)[0x55b9b0f6c3f5]
-💣 Program crashed: Signal 4: Backtracing from 0x7f42700cb928...
-💣 Program crashed: Illegal instruction at 0x00007f42700cb928
-Thread 0 "swift-frontend" crashed:
-0 0x00007f42700cb928 __DISPATCH_WAIT_FOR_QUEUE__ + 360 in libdispatch.so
-Backtrace took 0.00s
-```
-
-A race condition may or may not happen with async calls to a serial queue. Let's look at the code below
+### Race condition 1: Schedule a task from the task that is already executing on the same queue
+#### a. Calling sync inside a sync on the same serial queue will cause a deadlock
 ```Swift
-let serialQueue = DispatchQueue(label: "com.example.serialQueue")
-func performAsyncTask(completion: @escaping (Result<String, Error>) -> Void) {
-    serialQueue.async {
-        let result = "Task completed"
-        
-        serialQueue.async {
-            completion(.success(result))
-        }
-    }
-}
-
-performAsyncTask { result in
-    switch result {
-    case .success(let value):
-        print("Success: \(value)")
-    case .failure(let error):
-        print("Error: \(error)")
-    }
+import Foundation
+let serialQueue = DispatchQueue(label: "serialQueue")
+serialQueue.sync {
+  print("outer sync body")
+  serialQueue.sync {
+    print("inner sync body")
+  }
 }
 ```
-The program works most of the time, but sometimes will hang or crash.
-TODO: Investigate the root causes of the hang and the crash. They might have different root causes.
+Explanation: The outer sync task starts executing and the queue can't start another task until it completes. Inside its body, the outer task then calls a sync task, which means the outer can't complete until the inner sync task completes. However, the inner task can't even start, let alone complete, until the outer task completes (the basic characteristic of a serial queue).
 
-#### Dispatch a group task
-We might want to execute a bunch of tasks and wait for all of their completions before processing their results. This can be done with a dispatch group.
+#### b. Calling sync inside an async on the same serial queue will cause a deadlock
+```Swift
+import Foundation
+let serialQueue = DispatchQueue(label: "serialQueue")
+serialQueue.async {
+  print("outer sync body")
+  serialQueue.sync {
+    print("inner sync body")
+  }
+}
+print("after outer async")
+```
+Explanation: The outer async task is submitted to the queue and the calling threads move on to execute `print("after outer sync")`. At a certain time in the future, the outer task is executed on the queue by another thread. The task then calls a sync task, which means the outer can't complete until the inner sync task completes. However, the inner task can't even start, let alone complete, until the outer task completes (the basic characteristic of a serial queue).
+
+<mark> Apple's recommendation: You should never call `sync` function(s) from a task that is executing on the same queue. This is particularly important for serial queues, which are guaranteed to deadlock, but should also be avoided for concurrent queues. If you need to dispatch to the current queue, do so asynchronously via `async` functions. </mark>
+
+
+### Dispatch a group task
+We might want to execute a bunch of tasks asynchronously, wait for all of their completions, then processing or aggregating their results. This can be done with a [dispatch group](https://developer.apple.com/documentation/dispatch/dispatchgroup).
+
+```Swift
+// Create a dispatch group
+let dispatchGroup = DispatchGroup()
+
+// Use a global queue (concurrent) to submit the tasks
+let globalQueue = DispatchQueue.global(qos: .userInitiated)
+let myQueue = DispatchQueue(label: "myQueue")
+
+// Submit the first task
+dispatchGroup.enter()
+globalQueue.async {
+    print("Task 1 started")
+    Thread.sleep(forTimeInterval: 1) // Simulating a task
+    print("Task 1 completed")
+    dispatchGroup.leave()
+}
+
+// Submit the second task
+dispatchGroup.enter()
+globalQueue.async {
+    print("Task 2 started")
+    Thread.sleep(forTimeInterval: 2) // Simulating a task
+    print("Task 2 completed")
+    dispatchGroup.leave()
+}
+
+// Notify when all tasks are complete
+dispatchGroup.notify(queue: myQueue) {
+    print("All tasks have been completed.")
+}
+```
+
 
 ---
 ### 2. OperationQueue
+GCD queues are great for scheduling tasks to be executed serially or concurrently. However, they do not have built-in support for several cases 
 
 ---
-### 3. Async/Await
+### 3. Async/Await & Task
+Swift 5.5 introduces a new way to write concurrent programs, using a concept called <mark>structured concurrency</mark>.
+
+Before this, we use GCD or OperationQueue along with completion handlers. This older approach has several drawbacks pointed out by Apple's presentation. Let's look at their example.
+
+Example: Fetch a bunch of images and resize them to be thumbnails _sequentially_.
+```Swift
+// Asynchronous code with completion is unstructured.
+func fetchThumbnails(
+    for ids: [String],
+    completion handler: @escaping ([String: UIImage]?, Error?) -> Void
+) {
+    guard let id = ids.first else { return handler([:], nil) }
+    let request = thumbnailURLRequest(for: id)
+    let dataTask = URLSession.shared.dataTask(with: request) { data, response, error in
+        guard let response = response,
+              let data = data
+        else {
+            return handler(nil, error)
+        }
+        // ... check response ...
+        UIImage(data: data)?.prepareThumbnail(of: thumbSize) { image in
+            guard let image = image else {
+                return handler(nil, ThumbnailFailedError())
+            }
+            fetchThumbnails(for: Array(ids.dropFirst())) { thumbnails, error in
+                // ... add image to thumbnails ...
+            }
+        }
+    }
+    dataTask.resume()
+}
+```
+Using completion handler pattern, this code cannot use structured control-flow for error handling or a loop to process each thumbnail.
+
+The code above can be rewritten to use `async/await` syntax. This results in much cleaner code.
+```Swift
+func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
+    var thumbnails: [String: UIImage] = [:]
+    for id in ids {
+        let request = thumbnailURLRequest(for: id)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateResponse(response)
+        guard let image = await UIImage(data: data)?.byPreparingThumbnail(ofSize: thumbSize) else {
+            throw ThumbnailFailedError()
+        }
+        thumbnails[id] = image
+    }
+    return thumbnails
+}
+```
+
+Note that both code samples are still fetching images sequentially.
+
+Now, imagine that we need to fetch many images or items, we should do fetching operations concurrently with the usage of `Task`.
+A task provides a new async context for executing code concurrently. In other words, a task provides an execution context to run asynchronous code, and each task can run concurrently with respect to other execution contexts. They will be automatically scheduled to run in parallel if it is safe and efficient for the system to do so.
+Note that calling `async` function does NOT create a new Task for the call. We need to do it explicitly.
+
+#### Types of Tasks and related concepts:
+##### Type 1: Async-let
+Let's first talk about sequential binding. Assume that we want to fetch an image from the network, this code will block on the initialzation of `data` variable until the image is fetched. Other work can only be started after the image value is assigned to `data`.
+```Swift
+let data = try URLSession.shared.data(...)
+print("other work")
+```
+
+If we do not want to wait for the image fetching, we can turn it into concurrent binding with `async-let` syntax. This creates a child task to fetch the image, while the current code, aka. the parent task, continue its execution. The parent task will only await the completion of the child task when it reaches an expression that needs the actual result of the value.
+```Swift
+async let data = URLSession.shared.data(...)
+print("other work...")
+try await data
+```
+
+We can update the thumbnail fetching code above to use `async let`. We also refactor the code to fetch a single thumbnail into its own function. Now:
+With sequential binding, notice that `try await` is on the right hand side of the expression because that is where an error or suspension would be observed.
+```Swift
+func fetchOneThumbnail(withID id: String) async throws -> UIImage {
+    let imageReq = imageRequest(for: id), metadataReq = metadataRequest(for: id)
+    let (data, _) = try await URLSession.shared.data(for: imageReq)
+    let (metadata, _) = try await URLSession.shared.data(for: metadataReq)
+    guard let size = parseSize(from: metadata),
+          let image = UIImage(data: data)?.byPreparingThumbnail(ofSize: size)
+    else {
+        throw ThumbnailFailedError()
+    }
+    return image
+}
+```
+
+With concurrent binding, notice that now `async` is on the left side of the lets.
+Explanation: Both downloads now happen concurrently on child tasks. Now, the parent task only observe those downloads' effects when it actually _use_ the variables that are concurrently bound.
+```Swift
+func fetchOneThumbnail(withID id: String) async throws -> UIImage {
+    let imageReq = imageRequest(for: id), metadataReq = metadataRequest(for: id)
+    async let (data, _) = URLSession.shared.data(for: imageReq)
+    async let (metadata, _) = URLSession.shared.data(for: metadataReq)
+    guard let size = parseSize(from: try await metadata),
+          let image = try await UIImage(data: data)?.byPreparingThumbnail(ofSize: size)
+    else {
+        throw ThumbnailFailedError()
+    }
+    return image
+}
+```
+
+#### Task tree
+
+#### Cooperative cancelation
+Since tasks are not stopped immediately when cancelled, we must check for the cancellation status of current task in an appropriate way.
+
+Let's look at the fetching thumbnail code below which fetches many thumbnails. In the case that the task calling this function is cancelled, the code will throw an error and will not make unnecessary calls to fetch unused thumbnails.
+```Swift
+// Checking for cancellation by calling a method that throws
+func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
+    var thumbnails: [String: UIImage] = [:]
+    for id in ids {
+        try Task.checkCancellation()
+        thumbnails[id] = try await fetchOneThumbnail(withID: id)
+    }
+    return thumbnails
+}
+```
+
+If we still want to receive partial result instead of a thrown error, we can use `Task.isCancelled`.
+```Swift
+// Checking for cancellation by calling a method that throws
+func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
+    var thumbnails: [String: UIImage] = [:]
+    for id in ids {
+        if Task.isCancelled() { break }
+        thumbnails[id] = try await fetchOneThumbnail(withID: id)
+    }
+    return thumbnails
+}
+```
+
+
+#### Type 2: Task Group
+`Async-let` as shown in the fetching thumbnail examples above is for concurrency with static width. In other words, each thumbnail ID in the for-loop will call `fetchOneThumbnail` which in turns create exactly two child tasks. It means that the two child tasks must complete before the next loop iteration begins.
+
+If we want this loop to start fetching all of the thumbnails concurrently, the amount of concurrency is not known statically anymore. We can use a Task Group to achieve this.
+```Swift
+func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
+    var thumbnails: [String: UIImage] = [:]
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        for id in ids {
+            group.async {
+                // Error: Mutation of captured var 'thumbnails' in concurrently executing code
+                thumbnails[id] = try await fetchOneThumbnail(withID: id)
+            }
+        }
+    }
+    return thumbnails
+}
+```
+The code above uses `withThrowingTaskGroup` to create a Task Group that allow us to create child tasks that might throw errors. We create child tasks in a group by using its `async` method. Once added to a group, child tasks being executing immediately and in any order. When a group object goes out of scope, the completion of all tasks within it will be implicitly awaited.
+Now, a new task is created for each call to `fetchOneThumbnail`, which in turns create two more child tasks.
+
+However, the code above has an issue: The thumbnails dictionary cannot handle more than one access at a time.
+
+Task creatation takes a `@Sendable` closure, which cannot capture mutable variables. It should only capture value types, actors, or classes that implement their own synchronization.
+
+We can fix the issue above by having each child task return a value and let the parent task bear the responsibility of processing the result.
+```Swift
+func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
+    var thumbnails: [String: UIImage] = [:]
+    try await withThrowingTaskGroup(of: (String, UIImage).self) { group in
+        for id in ids {
+            group.async {
+                return (id, try await fetchOneThumbnail(withID: id))
+            }
+        }
+        // Obtain results from the child tasks, sequentially (which means we can safely add the thumbnail to the dictionary), in order of completion.
+        // This is an example of accessing a asynchronous sequence of values. Refer to `AsyncSequence` for more info.
+        for try await (id, thumbnail) in group {
+            thumbnails[id] = thumbnail
+        }
+    }
+    return thumbnails
+}
+```
+#### Type 3: Unstructured Tasks
+
+
+#### Type 4: Detached Tasks
+Similar to unstructured tasks, but do not inherit origin context.
+
 
 ---
 ### 4. Others
+
+
+---
+### References
+I appreciate all the resources I have read below
+
+[Apple's archived Concurrency Programming Guide](https://developer.apple.com/library/archive/documentation/General/Conceptual/ConcurrencyProgrammingGuide/Introduction/Introduction.html#//apple_ref/doc/uid/TP40008091-CH1-SW1)
+
+[Explore Structured Concurrency in Swift](https://developer.apple.com/videos/play/wwdc2021/10134/)
+
+
