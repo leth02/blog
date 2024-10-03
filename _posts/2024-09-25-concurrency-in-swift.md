@@ -3,6 +3,7 @@ title: "CONCURRENCY IN SWIFT"
 date: 2024-10-01
 ---
 There are several ways to do concurrency in Swift/Objective-C. This blog post is my attempt to gather all relevant mechanisms and serves as a reference for myself. I hope it benefits you as well.
+The choice of concurrency framework should depend on your specific use cases, codebases, etc. Any of the frameworks mentioned here can be used to achieve common concurrency needs.
 
 ---
 
@@ -198,7 +199,7 @@ Note that calling `async` function does NOT create a new Task for the call. We n
 ##### Type 1: Async-let
 Let's first talk about sequential binding. Assume that we want to fetch an image from the network, this code will block on the initialzation of `data` variable until the image is fetched. Other work can only be started after the image value is assigned to `data`.
 ```Swift
-let data = try URLSession.shared.data(...)
+let data = try await URLSession.shared.data(...)
 print("other work")
 ```
 
@@ -242,6 +243,11 @@ func fetchOneThumbnail(withID id: String) async throws -> UIImage {
 ```
 
 #### Task tree
+Whenever we make a call from one async function to another, the same task is used to execute the call. The function therefore inherits all attributes of that task. If we create a new structured task inside the function, it becomes the child of the task that the function is running on. Task are not the child of a function, but their lifetime may be scoped to it.
+
+A task tree is made up of links between each parent and its child tasks. A link enforces that <mark>a parent task can only finish its work if all of its child tasks have finished, even if abnormal control-flow which would prevent a child task from being awaited.</mark> Swift will automatically mark the unwaited task as cancelled and await for it to finish before exiting the function. Marking a task as cancelled does not stop the task. If a task is cancelled, all of its subtasks are cancelled, too. The function only exits when all of the structured tasks it created directly or indirectly have finished. This is called structured task guarantee.
+
+
 
 #### Cooperative cancelation
 Since tasks are not stopped immediately when cancelled, we must check for the cancellation status of current task in an appropriate way.
@@ -276,7 +282,7 @@ func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
 #### Type 2: Task Group
 `Async-let` as shown in the fetching thumbnail examples above is for concurrency with static width. In other words, each thumbnail ID in the for-loop will call `fetchOneThumbnail` which in turns create exactly two child tasks. It means that the two child tasks must complete before the next loop iteration begins.
 
-If we want this loop to start fetching all of the thumbnails concurrently, the amount of concurrency is not known statically anymore. We can use a Task Group to achieve this.
+If we want this loop to start fetching all of the thumbnails concurrently, the amount of concurrency is not known statically anymore because it now depends on the number of thumbnails to fetch. We can use a Task Group to achieve this.
 ```Swift
 func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
     var thumbnails: [String: UIImage] = [:]
@@ -291,12 +297,11 @@ func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
     return thumbnails
 }
 ```
-The code above uses `withThrowingTaskGroup` to create a Task Group that allow us to create child tasks that might throw errors. We create child tasks in a group by using its `async` method. Once added to a group, child tasks being executing immediately and in any order. When a group object goes out of scope, the completion of all tasks within it will be implicitly awaited.
-Now, a new task is created for each call to `fetchOneThumbnail`, which in turns create two more child tasks.
+The code above uses `withThrowingTaskGroup` to create a Task Group that allow us to create child tasks that might throw errors. We create child tasks in a group by using its `async` method. Tasks added to a group cannot outlive the scope of the block in which the group is defined. Once added to a group, child tasks being executing immediately and in any order. <mark>When a group object goes out of scope, the completion of all tasks within it will be implicitly awaited.</mark> This is due to the task tree rule discussed above as group tasks are also structured. We can use async-let within group tasks or create task groups within async-let tasks.
 
-However, the code above has an issue: The thumbnails dictionary cannot handle more than one access at a time.
+Now, a new task is created for each call to `fetchOneThumbnail`, which in turns create two more child tasks. However, the code above has an error: The `thumbnails` dictionary cannot handle more than one access at a time. If two child tasks tried to insert thumbnails simultaneously, it could cause a crash or data corruption.
 
-Task creatation takes a `@Sendable` closure, which cannot capture mutable variables. It should only capture value types, actors, or classes that implement their own synchronization.
+__Data-race Safety__: When a task is created, the work it performs is within a new closure type called a `@Sendable` closure, which is restricted from capturing mutable variables in its lexical context. It should only capture values that are safe to share: value types, actors, or classes that implement their own synchronization. Refer to `Protect mutable state with actors` for more info.
 
 We can fix the issue above by having each child task return a value and let the parent task bear the responsibility of processing the result.
 ```Swift
@@ -317,16 +322,128 @@ func fetchThumbnails(for ids: [String]) async throws -> [String: UIImage] {
     return thumbnails
 }
 ```
-#### Type 3: Unstructured Tasks
 
+Note: There is a small difference in how the task tree rule is implemented for group tasks vs async-let tasks. Suppose when iterating through the results of a task group, we encounter a child task that completed with an error. Because that error was thrown out of the group's block, all tasks in the group will then be implicitly cancelled and then awaited. This works the same as async-let. However, the difference comes when a group goes out of scope through a normal exit from the block. Then, cancellation is not implicit. This allows us to express the fork-join pattern easier with a task group.
+
+
+#### Type 3: Unstructured Tasks
+We can also create unstructured tasks when we don't need a hierarchy for our tasks. Some situations include:
+- <mark>We don't have a parent task: The tasks need to launch from non-async contexts</mark>
+- <mark>The lifetime we want for a task might extend beyond a single scope or even a function.</mark> For example, we might want to start a task in response to a method call that puts an object into an active state, and then cancel its execution in response to a different method call that deactivates the object. This comes up a lot when implementing delegate objects in AppKit and UIKit.
+ 
 
 #### Type 4: Detached Tasks
 Similar to unstructured tasks, but do not inherit origin context.
 
 
----
-### 4. Others
+#### Protect mutable state with actors
 
+#### AsyncSequence
+A description of how to produce values over time, this new protocol type resembles the `Sequence` type - offering a list of values we can step through one at a time - and adds asynchronicity. Each element is delivered asynchronously. An AsyncSequence will suspend on each element and resume when the underlying iterator produces a value or throws an error. We use for await-in loop to iterate through an AsyncSequence. It completes when its iterator returns nil. When errors occur, they will return nil on subsequent calls to next on their iterator.
+
+```Swift
+// Asynchronously loop over an AsyncSequence
+for await quake in quakes {
+    if quake.magnitude > 3 {
+        displayEarthquake(quake)
+    }
+}
+
+// if an AsyncSequence can throw, use `for try await`
+do {
+    for try await quakes in quakeDownload {
+        print(quakes)
+    }
+} catch {}
+```
+
+In the code sample above, the second iterarion runs after the first iteration completes. However, running code sequentially is not always what's desired. We can run an interarion concurrent to other things going on by creating a new async task that encapsulates the iteration. This can be useful when we know our async sequences may run indefinitely.
+```Swift
+Task {
+    for await quake in quakes {}
+}
+
+Task {
+    do {
+        for try await quake in quakeDownload {}
+    } catch {}
+}
+```
+
+We can also cancel the iteration externally
+```Swift
+let iteration1 = Task {
+    for await quake in quakes {}
+}
+
+let iteration2 = Task {
+    do {
+        for try await quake in quakeDownload {}
+    } catch {}
+}
+
+// ... later on
+iteration1.cancel()
+iteration2.cancel()
+```
+
+**AsyncSequence APIs and use cases**
+1/ Read bytes asynchronously from a `FileHandle`
+```Swift
+for try await line in FileHandle.standardInput.bytes.lines {}
+```
+
+2/ Read bytes or lines asynchronously from a URL (can be used for both file and network)
+```Swift
+let url = URL(fileURLWithPath: "/tmp/somefile.txt")
+for try await line in url.lines {}
+```
+
+3/ Read byets asynchronously from `URLSession`
+```Swift
+let (bytes, response) = try await URLSession.shared.bytes(from: url)
+guard let httpResponse = response as? HTTPURLResponse,
+    httpResponse.statucCode == 200 else {
+  throw MyNetworkingError.invalidServerResponse
+}
+for try await byte in bytes {}
+```
+
+4/ Await notifications asynchronously with a predicate
+```Swift
+let center = NotificationCenter.default
+let notification = await center.notifications(named: .NSPersistentStoreRemoteChange).first {
+    $0.userInfo[NSStoreUUIDKey] == storeUUID
+}
+```
+
+**Create your own AsyncSequence with AsyncStream/AsyncThrowingStream**
+```Swift
+class QuakeMonitor {
+    var quakeHandler: (Quake) -> Void
+    func startMonitoring()
+    func stopMonitoring()
+}
+
+let quakes = AsyncStream(Quake.self) { continuation in
+    let monitor = QuakeMonitor()
+    monitor.quakeHandler = { quake in
+        continuation.yield(quake)
+    }
+    continuation.onTermination = { @Sendable _ in
+        monitor.stopMonitoring()
+    }
+    monitor.startMonitoring()
+}
+
+let significantQuakes = quakes.filter { quake in
+    quake.magnitude > 3
+}
+
+for await quake in significantQuakes {
+    ...
+}
+```
 
 ---
 ### References
