@@ -2,6 +2,9 @@
 title: "MVVM with RxSwift"
 date: 2024-10-11
 ---
+TODO: Add more view model(s). One view controller can hold a strong reference to several view models and also bind to them if wanted.
+TODO: Add gestures type: tapped and swipe
+
 An MVVM design where bindings between ViewModel and View Controller is done with RxSwift. App/System notifications are wrapped in RxSwift Observables.
 
 ### View Controller
